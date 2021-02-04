@@ -1,0 +1,66 @@
+<html>
+   <head>
+      <style>
+         h3{
+            margin-bottom: 5px;
+         }
+         p{
+            margin-bottom: 40px;
+         }
+      </style>
+   </head>
+
+<p><h4>Relazione progetto Computer Graphics 19/20 - Eric Philip Siebenrock</h4>
+   Il progetto è il proseguimento del progetto car visto a lezione.<br>
+Occorre aprire il file "car.html" tramite server web locale.</p>
+
+<p><h3>MESH E LETTURA OBJ</h3>
+   Ho scaricato la mesh della macchina da uno dei siti consigliati, in formato OBJ. Inizialmente era un oggetto unico, quindi ho dovuto separare le ruote e anche modificare alcuni materiali per migliorare un po' l’effetto dello shading (coefficienti speculari e shininess) e infine triangolare le facce.
+   Ho dovuto modificare la libreria glm_light e la libreria subdiv per leggere anche le normali dei vertici e i materiali delle facce dal file .mtl.
+</p>
+
+<p><h3>SHADING (car.html)</h3>
+   Ho aggiunto due luci puntiformi vicino all’origine (una blu e una verde) anche per mostrare meglio lo shading della macchina, e posizionato una luce direzionale di colore rosso, che può essere disattivata da pulsante HTML.
+   Per la macchina ho implementato sia il Phong (“vertex-shader” + “fragment-shader”) che il Gouraud shading (“vertex-shader-gouraud” + “fragment-shader-gouraud”), il tipo di shading che si vuole usare nel rendering è selezionabile con una select box, mentre per l’ambiente viene usato il Gouraud shading. Lo shader delle texture (“vertex-shader-texture” + “fragment-shader-texture”) utilizza anch’esso Phong come implementazione dello shading delle luci.
+   
+   Ho inserito una luce di tipo spotlight che ha una posizione fissa rispetto alla macchina per simulare i fari, essa viene gestita nei vertex/fragment-shader-gouraud e vertex/fragment-shader-texture per fare in modo che l’ambiente circostanze ne sia influenzato.
+</p>
+
+<p><h3>MACCHINA (car.js)</h3>
+   Questo file racchiude tutte le funzioni relative alla macchina.
+   Contiene le funzioni di lettura della mesh della macchina in formato obj utilizzando jQuery ajax e le sue funzioni di renderizzazione chiamate a ogni rendering di un frame. Inoltre contiene anche la funzione di aggiornamento della posizione della spotlight dei fari, che deve fissa rispetto alla posizione della macchina.
+</p>
+
+<p><h3>PANNELLO DI CONTROLLO (control-panel.js)</h3>
+   Come da specifiche ho implementato un pannello di controllo sovrapposto al canvas di webgl con alcuni bottoni simulati che permettono anche di controllare la macchina per rendere l’applicazione fruibile da dispositivi mobili. Nel pannello è possibile anche modificare i parametri relativi alla fisica, quali attriti e accelerazione. Infine dal pannello è possibile abilitare e disabilitare l’environment mapping sulla macchina.
+</p>
+
+<p><h3>CAMERE (multiple-cameras.js)</h3>
+   Ho aggiunto 2 camere oltre a quella iniziale, la prima è fissa rispetto alla macchina ed è posizionata dietro ad essa.
+   Anche la seconda camera segue la macchina ed ha la posizione della macchina come target, ma è possibile variare i valori di theta e phi della posizione della camera, usando il mouse.
+   La camera utilizzata può essere cambiata premendo il tasto ‘c’.
+</p>
+
+<p><h3>SKYBOX + ENVIRONMENT MAPPING (skybox.js)</h3>
+   Per simulare l’ambiente esterno ho implementato una skybox con un immagine di cielo. Insieme ad essa il relativo environment mapping sulla carrozzeria della macchina. L’environment mapping è implementato sia nel fragment-shader del Phong shading che in quello del Gouraud shading.
+</p>
+
+<p><h3>SCENOGRAFIA (environment.js)</h3>
+   Per la scenografia ho cercato di simulare un ambiente desertico.
+L’ambiente è dotato di alcuni oggetti di scenografia: un cartello stradale, i cactus, le rocce e delle piante che rotolano nel suolo e una piramide. Alcuni oggetti vengono letti da file obj + mtl, altri sono definiti direttamente nella applicazione in javascript. Per gli oggetti che hanno spigoli (piramide, cartello..) ho definito più volte i vertici e relative normali per evitare l’effetto di eliminazione degli spigoli dovuto al gouraud shading.
+Il cartello stradale è composto da un cilindro allungato con un materiale metallico, creato usando blender, e il cartello stesso. Il cartello è stato realizzato con un cubo con una delle dimensioni estremamente scalata rispetto alle altre, su cui è applicato la foto.
+Durante la lettura del file obj del cactus viene applicata una lieve modifica alle normali (viene modificata la componente principale), in modo da simulare una superficie non liscia. Essendo fatto manualmente e con componenti casuali, ha un effetto meno preciso rispetto a un bump mapping vero e proprio generato da un software come Blender.
+Vengono generate molte istanze degli oggetti (il numero è modificabile) e per ciascuna di esse viene generata una posizione e scala casuale in un range di valori.
+
+   </p>
+
+<p><h3>TEXTURE</h3>
+   Ho applicato tre texture, che sono influenzate dalla luce usando il Phong shading.
+   La prima texture è applicata alla superficie del suolo, la texture si ripete con mirrored-repeat un numero di volte che dipende dalla dimensione impostata della superficie.
+   La seconda è applicata al cartello stradale, ed è la mia foto.
+   La terza texture è applicata alla mesh della piramide.
+   Le coordinate texture, così come i relativi oggetti, sono tutte definite manualmente, trattandosi di oggetti semplici con pochi vertici.
+   Tutte le texture sono quadrate con dimensioni potenze di 2 in modo da generare il mip-mapping (utile soprattutto nella texture applicata al suolo).
+</p>
+
+</html>

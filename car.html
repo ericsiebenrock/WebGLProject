@@ -1,0 +1,974 @@
+<!doctype html>
+<html>
+
+<head>
+   <META HTTP-EQUIV=”Pragma” CONTENT=”no-cache”>
+   <META HTTP-EQUIV=”Cache-Control” CONTENT=”no-cache”>
+   <style>
+      body {
+         background: #2c2c2c;
+      }
+
+      #my_Canvas {
+         margin: 10px;
+         /* padding: 10px; */
+         /* background: #2a33b4; */
+         border: thin inset #aaaaaa;
+      }
+
+      .container {
+         /*to manage text on canvas and webgl */
+         position: relative;
+      }
+
+      #ControlPanel {
+         /*to manage text on canvas and webgl */
+         background-color: transparent;
+         /* needed because we setcanvas bg color to white */
+         position: absolute;
+         left: 20px;
+         top: 500px;
+         z-index: 10;
+      }
+   </style>
+<script type="text/javascript" src="./resources/utils.js"></script>
+<!-- definisce le strutture dati della mesh per lettura da obj -->
+<script type="text/javascript" src="./resources/subdiv.js"></script>
+<!-- crea la struttura dati "mesh" riempita poi dalla glm_light -->
+<script type="text/javascript" src="./resources/mesh_utils.js"></script>
+<!-- legge da obj e riempe la struttura dati "mesh" -->
+<script type="text/javascript" src="./resources/glm_light.js"></script>
+<script type="text/javascript" src="resources/jquery-3.5.0.min.js"></script>
+<!-- utlity per creare, compilare e linkare shaders -->
+<script type="text/javascript" src="resources/webgl-utils.js"></script>
+<!-- per creare e gestire le matrici -->
+<script type="text/javascript" src="resources/m4.js"></script>
+<!-- usata in skybox per creare il cubemap -->
+<script type="text/javascript" src="resources/primitives.js"></script>
+</head>
+
+<body>
+   <div class="container">
+      <canvas width="900" height="600" id="my_Canvas"></canvas>
+
+      <!-- Il canvas text è sovrapposto al canvas di WebGL -->
+      <canvas width="900" height="100" id="ControlPanel"></canvas>
+
+      <script src="car.js"></script>
+      <script src="multiple-cameras.js"></script>
+      <script src="control-panel.js"></script>
+      <script src="environment.js"></script>
+      <script src="skybox.js"></script>
+
+      <p> </p>
+         <button id="Button1">Increase D</button>
+         <button id="Button2">Decrease D</button>
+         <button id="Button3">Increase Zm</button>
+         <button id="Button4">Decrease Zm</button>
+         <button id="Button5">Increase fov</button>
+         <button id="Button6">Decrease fov</button>
+         <div style="color: whitesmoke; margin-top: 20px;">Shading Mode:<select id="shading">
+            <option value="phong">Phong</option>
+            <option value="gouraud">Gouraud</option>
+         </select>
+         <button id="DirLight">Toggle directional light</button>
+      </div>
+      <p> </p>
+      <div style="color: whitesmoke;">COMANDI: 
+         <br> 'W-A-S-D': muovi macchina
+         <br> 'mouse click+move': sposta camera
+         <br> 'C': cambia camera (3 camere)
+      </div>
+
+      <script id="vertex-shader" type="not-javascript">
+         precision mediump float;
+         attribute vec3 position;
+         attribute vec3 vertNormal;
+         attribute vec3 aKa;
+         attribute vec3 aKd;
+         attribute vec3 aKs;
+         attribute float ashininess;
+         uniform mat4 Pmatrix; //matrice di proiezione (P)
+         uniform mat4 Vmatrix; //matrice cambio sdr (M)
+         uniform mat4 Mmatrix; //matrice trasformazione
+         uniform mat4 wNormalMat; //normalMat (world coordinates)
+         uniform mat4 normalMat; //normalMat
+
+         //varying vec3 vColor;
+         varying vec4 interpNormal; //interpolated normal
+         varying vec4 wInterpNormal; //interpolated normal (world coordinates)
+         varying vec4 interpPosition;
+         varying vec4 Ka;
+         varying vec4 Kd;
+         varying vec4 Ks;
+         varying float shininess;
+
+         void main(void) { //pre-built function
+            //posizione vertice in coordinate osservatore "standard"
+            //(per calcolare poi il vettore verso osservatore)
+            vec4 vertPos4 = Vmatrix*Mmatrix*vec4(position, 1.0);
+            //anche se non divido per w non cambia nulla, questa divisione solitamente non serve a nulla
+            //perche' w e' 1 solitamente (ho applicato solo il cambio di sdr, non la matrice P). 
+            //questo serve comunque per "aggiustare" la posizione in
+            //coordinate osservatore nel caso in cui per qualche ragione la w sia diversa da 1 
+            //(in tal caso se non dividessi per w userei una posizione sbagliata)
+            interpPosition = vertPos4 / vertPos4.w; 
+            //normale del vertice in coord. mondo trasformata con matrice di trasformazione
+            interpNormal = normalMat * vec4(vertNormal,0.0);
+            wInterpNormal = wNormalMat * vec4(vertNormal,0.0);
+            gl_Position = Pmatrix * vertPos4;
+            Ka = vec4(aKa,1.0);
+            Kd = vec4(aKd,1.0);
+            Ks = vec4(aKs,1.0);
+            shininess = ashininess;
+         }
+      </script>
+      <script id="fragment-shader" type="not-javascript">
+         precision mediump float; 
+         uniform mat4 Vmatrix;//dal vertex shader
+         varying vec4 interpNormal; //tutti i varying sono interpolati dalla pipeline fissa
+         varying vec4 wInterpNormal;
+         varying vec4 interpPosition;
+
+         //phong shading: Ka,Kd e Ks sono anch'essi implementati come vettori
+         //per avere possibilita' di modificare i colori separatamente
+         //proprieta' del materiale
+         varying vec4 Ka; // Ambient reflection coefficient
+         varying vec4 Kd; // Diffuse reflection coefficient
+         varying vec4 Ks; // Specular reflection coefficient
+         varying float shininess; // Shininess
+         float cosRVn = 0.0;
+
+         //per gestire piu' sorgenti luminose
+         uniform vec4 dirLightPos;
+         uniform vec4 dirLightDiffColor;
+         uniform vec4 dirLightSpecColor;
+         uniform vec4 ambientLightColor;
+         uniform vec4 lightPosArr[2];
+         uniform vec4 diffuseLightColorArr[2];
+         uniform vec4 specularLightColorArr[2];
+         vec3 lightsEffect = vec3(0.0);
+         vec3 R = vec3(0.0);
+         uniform int dirLightState;
+
+         //environment mapping
+         uniform int envMap;
+         //skybox (passata in skybox.js) = u_skybox
+         //i dati vengono presi dal buffer TEXTURE_CUBE_MAP
+         uniform samplerCube u_envTex; 
+
+         vec3 ka;
+         vec3 kd;
+         vec3 ks;
+         void main(void) {
+            ka=vec3(Ka);
+            kd=vec3(Kd);
+            ks=vec3(Ks);
+
+            vec3 N = normalize(vec3(interpNormal)); //normale del punto interpolata e normalizzata
+            vec3 wN = normalize(vec3(wInterpNormal));
+
+            for(int i = 0; i < 2; i++) {
+               vec3 eyeLightPos = vec3(Vmatrix * lightPosArr[i]);
+               vec3 L = normalize(vec3(eyeLightPos) - vec3(interpPosition)); //vettore da punto a luce
+               float cosNL = max(dot(N,L), 0.0); //coseno angolo tra N e L [0,1] (cos(teta))
+               if(cosNL > 0.0){
+                  R = reflect(-L, N); //vettore della luce riflessa
+                  //vettore da punto a osservatore(siamo in coordinate osservatore)
+                  vec3 V = normalize(-vec3(interpPosition));
+                  float cosRV = max(dot(R, V), 0.0);//cosento angolo tra osservatore e luce riflessa (cos(alfa)) 
+                  cosRVn = pow(cosRV, shininess);
+               }
+               lightsEffect += kd.rgb * cosNL * vec3(diffuseLightColorArr[i]).rgb + ks.rgb * cosRVn * vec3(specularLightColorArr[i]).rgb;
+            }
+            lightsEffect += ka.rgb * vec3(ambientLightColor).rgb;
+            
+            
+            //aggiunta luce direzionale (semplice prodotto scalare tra luce e vettore normale)
+            if(dirLightState==1){
+               vec3 dl = vec3(dirLightPos);
+               float dirLight = dot(vec3(wN),dl);
+               vec3 eyeLightPos = vec3(Vmatrix * dirLightPos);
+               vec3 L = normalize(eyeLightPos - vec3(interpPosition));
+               R = reflect(-L, N);
+               vec3 V = normalize(-vec3(interpPosition));
+               float cosRV = max(dot(R, V), 0.0);//cosento angolo tra osservatore e luce riflessa (cos(alfa)) 
+               cosRVn = pow(cosRV, shininess);
+               lightsEffect += (kd.rgb*vec3(dirLightDiffColor).rgb + ks.rgb*cosRVn*vec3(dirLightSpecColor).rgb)*dirLight;
+            }
+            gl_FragColor = vec4(lightsEffect,1.0);
+
+            //environment mapping
+            //vettore da camera a punto della macchina (siamo in coordinate osservatore)
+            if(envMap==1){
+               vec4 N = normalize(interpNormal);
+               vec4 eyeToSurfaceDir = normalize(interpPosition);
+               //usando la reflectionDir vado a campionare il colore della cubemap/skybox per colorare la macchina
+               vec4 reflectionDir = reflect(eyeToSurfaceDir, interpNormal);
+               //*0.4 serve per avere un riflesso meno intenso 
+               gl_FragColor += textureCube(u_envTex, normalize(reflectionDir.xyz / reflectionDir.w))*0.5;
+            }
+         }
+      </script>
+
+      <script id="vertex-shader-gouraud" type="not-javascript">
+         precision mediump float;
+         attribute vec3 position;
+         attribute vec3 normal;
+         uniform mat4 projMat, viewMat, mMat, normalMat, wNormalMat;
+         varying vec3 interpNormal;
+         varying vec3 interpPosition;
+
+         //componenti materiale (passati per ogni vertice, non fissi come uniform)
+         attribute vec3 Ka; // Ambient reflection coefficient
+         attribute vec3 Kd; // Diffuse reflection coefficient
+         attribute vec3 Ks; // Specular reflection coefficient
+         attribute float shininessVal; // Shininess
+
+         //componenti luce
+         uniform vec4 dirLightPos;
+         uniform vec4 dirLightDiffColor;
+         uniform vec4 dirLightSpecColor;
+         uniform vec4 ambientColor;
+         uniform vec4 diffuseColor[2];
+         uniform vec4 specularColor[2];
+         uniform vec4 lightPos[2]; // Light position
+         //spotlight
+         uniform vec4 spotLightPosition;
+         uniform vec4 spotLightDirection;
+         uniform vec4 spotLightColor;
+         uniform float spotLightLimit;
+         uniform float spotLightLimit2;
+         varying vec4 color; //color passed to fragment
+         vec3 lightsEffect = vec3(0.0);
+         uniform int dirLightState;
+
+         float cosRVn=0.0;
+         float cosRV=0.0;
+
+         void main(){ //vertex-shader
+            vec4 vertPos4 = viewMat * mMat * vec4(position, 1.0);
+            gl_Position = projMat * vertPos4;
+
+            interpPosition = vec3(vertPos4) / vertPos4.w;
+            interpNormal = vec3(normalMat * vec4(normal, 0.0));
+            vec3 N = normalize(interpNormal);
+            vec3 wN = normalize(vec3(wNormalMat * vec4(normal, 0.0)));
+
+            for(int i = 0; i < 2; i++) {
+               vec4 eyeLightPos = viewMat * lightPos[i];
+               vec3 L = normalize(eyeLightPos.rgb - interpPosition);
+               // Lambert's cosine law
+               float cosNL = max(dot(N, L), 0.0);
+               if(cosNL > 0.0) {
+                  vec3 R = reflect(-L, N); 
+                  vec3 V = normalize(-interpPosition); // vettore da punto a osservatore
+               
+                  cosRV = max(dot(R, V), 0.0);
+                  cosRVn = pow(cosRV, shininessVal);
+               }
+               lightsEffect +=  Kd * cosNL * vec3(diffuseColor[i]).rgb + Ks * cosRVn * vec3(specularColor[i]).rgb;
+            }
+            lightsEffect += Ka * vec3(ambientColor).rgb;
+            
+            //luce direzionale
+            if(dirLightState==1){
+               vec3 dl = vec3(dirLightPos);
+               float dirLight = dot(wN,dl);//valori negativi simulano una sorta di auto ombra
+               vec3 eyeLightPos = vec3(viewMat * dirLightPos);
+               vec3 L = normalize(eyeLightPos - interpPosition);
+               vec3 R = reflect(-L, N);
+               vec3 V = normalize(-interpPosition);
+               float cosRV = max(dot(R, V), 0.0);//cosento angolo tra osservatore e luce riflessa (cos(alfa)) 
+               cosRVn = pow(cosRV, shininessVal);
+               lightsEffect += (Kd.rgb*vec3(dirLightDiffColor).rgb + Ks.rgb*cosRVn*vec3(dirLightSpecColor).rgb)*dirLight;
+            }
+
+            //aggiunta luce spotLight
+            //la spotlight e' gestita solo in questo shader e in fragment-shader-texture
+            vec4 worldVPosition = mMat * vec4(position, 1.0);
+            //vettore da superficie a luce in coordinate mondo
+            vec4 wSurfaceToLight = normalize(spotLightPosition - worldVPosition);
+            //prodotto scalare tra vettore punto-luce e lightDirection (essendo normalizzati corrisponde al coseno dell'angolo)
+            float dotSurfaceLightDir = dot(wSurfaceToLight, -spotLightDirection);
+            float limitRange = spotLightLimit - spotLightLimit2; //(0.86(cos(30)) - 0.64(cos(50))) = 0.22
+            //se dotSurfaceLightDir > 0.86 verra' valore > 1 se 0.86<dotSurfaceLightDir<0.64 verra' valore tra 0 e 1 (linear interp)
+            //se dotSurfaceLightDir < 0.64 viene valore < 0 ma la funzione clamp fa in modo che il valore finale sia sempre tra 0 e 1
+            float inLight = clamp((dotSurfaceLightDir - spotLightLimit2) / limitRange, 0.0, 1.0);
+            //float light = inLight * dot(vec4(wN,1.0), wSurfaceToLight);
+            if (dotSurfaceLightDir >= spotLightLimit2) {
+               float spotLight = max(dot(vec4(wN,1.0), wSurfaceToLight),0.0) * inLight;
+               lightsEffect +=  Kd.rgb * spotLight * vec3(spotLightColor).rgb;
+            }
+
+            color = vec4(lightsEffect, 1.0);
+         }
+      </script>
+      <script id="fragment-shader-gouraud" type="not-javascript">
+         precision mediump float; 
+         uniform mat4 viewMat;
+         varying vec4 color;
+         varying vec3 interpNormal; //tutti i varying sono interpolati dalla pipeline fissa
+         varying vec3 interpPosition;
+
+         //per gestire piu' sorgenti luminose
+         vec3 R = vec3(0.0);
+
+         uniform vec4 lightPos[2]; //stesso del vertex shader
+         //environment mapping
+         uniform int envMap;
+         //skybox (passata in skybox.js) = u_skybox
+         //i dati vengono presi dal buffer TEXTURE_CUBE_MAP
+         uniform samplerCube u_envTex; 
+
+         void main(void) {      
+            
+            gl_FragColor = color;
+            
+            if(envMap==1){
+               vec3 N = normalize(interpNormal); //normale del punto interpolata e normalizzata  
+               vec3 eyeToSurfaceDir = normalize(interpPosition);
+               vec3 reflectionDir = reflect(eyeToSurfaceDir, N);
+               //*0.4 serve per avere un riflesso meno intenso 
+               gl_FragColor += textureCube(u_envTex, normalize(reflectionDir))*0.4;
+            }
+         }
+      </script>
+
+      <script id="vertex-shader-texture" type="x-shader/x-vertex">
+         precision mediump float;
+
+         attribute vec3 a_position;
+         attribute vec3 a_normal;
+         attribute vec2 a_texcoord;
+         
+         uniform mat4 Pmatrix; //matrice di proiezione (P)
+         uniform mat4 Vmatrix; //matrice cambio sdr (M)
+         uniform mat4 Mmatrix; //matrice trasformazione
+         uniform mat4 u_worldInverseTransposeTex; //normalMat (world coordinates)
+         uniform mat4 u_inverseTransposeTex; //normalMat
+
+         varying vec3 v_position;
+         varying vec3 v_wposition;
+         varying vec3 v_normal;
+         varying vec3 v_wnormal;
+         varying vec2 v_texcoord;
+         
+         void main() {
+            vec4 vertPos4 = Vmatrix*Mmatrix*vec4(a_position, 1.0);
+            vec4 vertwPos4 = Mmatrix*vec4(a_position, 1.0);
+
+            gl_Position = Pmatrix * vertPos4;
+            v_wposition = vec3(vertwPos4 / vertwPos4.w);
+            v_position = vec3(vertPos4 / vertPos4.w);
+            v_normal = vec3(u_inverseTransposeTex * vec4(a_normal,0.0));
+            v_wnormal = vec3(u_worldInverseTransposeTex * vec4(a_normal,0.0));
+            v_texcoord = a_texcoord;
+         }
+      </script>
+      <script id="fragment-shader-texture" type="x-shader/x-fragment">
+         precision mediump float;
+         uniform mat4 Vmatrix;
+
+         varying vec3 v_position;
+         varying vec3 v_wposition;
+         varying vec3 v_normal;
+         varying vec3 v_wnormal;
+         varying vec2 v_texcoord;
+
+         // The cube texture
+         uniform sampler2D u_texture;
+
+         //componenti del materiale (solo ambiente e diffusa)
+         uniform vec4 KaT;
+         uniform vec4 KdT;
+         
+         //componenti luce ambiente (stesse del fragment principale)
+         uniform vec4 dirLightPos;
+         uniform vec4 dirLightDiffColor;
+         uniform vec4 ambientColor;
+         uniform vec4 lightPosArr[2];
+         uniform vec4 diffuseLightColorArr[2];
+         uniform vec4 specularLightColorArr[2];
+         //spotlight
+         uniform vec4 spotLightPosition;
+         uniform vec4 spotLightDirection;
+         uniform vec4 spotLightColor;
+         uniform float spotLightLimit;
+         uniform float spotLightLimit2;
+         vec3 lightsEffect = vec3(0.0);
+         float cosRVn = 0.0;
+         uniform int dirLightState;         
+
+         //texture modificata solo da componenti colore della luce
+         void main() {
+            vec3 kdT = vec3(KdT);
+            vec3 kaT = vec3(KaT);
+            vec3 dirLightDiffColor3 = vec3(dirLightDiffColor);
+
+            vec3 N = normalize(v_normal); //normale del punto interpolata e normalizzata
+            vec3 wN = normalize(v_wnormal);
+
+            for(int i = 0; i < 2; i++) {
+               vec3 eyeLightPos = vec3(Vmatrix * lightPosArr[i]);
+               vec3 L = normalize(eyeLightPos - v_position); //vettore da punto a luce
+               float cosNL = max(dot(N,L), 0.0); //coseno angolo tra N e L [0,1] (cos(teta))
+               if(cosNL > 0.0){
+                  lightsEffect +=  kdT.rgb * cosNL * vec3(diffuseLightColorArr[i]).rgb;
+               }
+               //lightsEffect += kaT.rgb * vec3(ambientLightColorArr[i]).rgb;
+            }
+            lightsEffect += kaT.rgb * vec3(ambientColor).rgb;
+            
+            if(dirLightState==1){
+               vec3 dl = normalize(vec3(dirLightPos));
+               float dirLight = dot(wN,dl);//valori negativi simulano una sorta di auto ombra
+               lightsEffect += kdT.rgb * dirLightDiffColor3.rgb * dirLight;
+            }
+
+            //aggiunta luce spotLight (coordinate mondo)
+            vec3 wSurfaceToLight = normalize(vec3(spotLightPosition) - v_wposition);
+            float dotSurfaceLightDir = dot(wSurfaceToLight, -vec3(spotLightDirection));
+            float limitRange = spotLightLimit - spotLightLimit2;
+            float inLight = clamp((dotSurfaceLightDir - spotLightLimit2) / limitRange, 0.0, 1.0);
+            //float light = inLight * dot(wN, wSurfaceToLight);
+            if (dotSurfaceLightDir >= spotLightLimit2) {
+               float spotLight = max(dot(wN, wSurfaceToLight),0.0) * inLight;
+               lightsEffect +=  kdT.rgb * spotLight * vec3(spotLightColor).rgb;
+            }
+
+            vec4 color0 = texture2D(u_texture, v_texcoord);
+            gl_FragColor = color0 + vec4(lightsEffect,1.0);
+         }
+      </script>
+      <script id="skybox-vertex-shader" type="x-shader/x-vertex">
+            attribute vec4 a_position;
+            varying vec4 v_position;
+            void main() {
+              v_position = a_position;
+              //z impostata a 1 per avere skybox piu' lontana di ogni altro oggetto
+              gl_Position = vec4(a_position.xy, 1, 1);
+            }
+      </script>
+      <script id="skybox-fragment-shader" type="x-shader/x-fragment">
+            precision mediump float;
+            
+            uniform samplerCube u_skybox; //skybox (passata in skybox.js)
+            uniform mat4 u_viewDirectionProjectionInverse;
+            
+            varying vec4 v_position;
+            void main() {
+               //la v_position e' in coordinate del piano di proiezione, moltiplicando per la matrice
+               //si ottengono i vertici in coordinate mondo, tali coordinate verranno interpretate come
+               //vettori per campionare il cubemap
+              vec4 t = u_viewDirectionProjectionInverse * v_position;
+              //t e' la direzione verso cui guarda la camera, tramite essa si campiona il cubemap
+              //per ottenere il colore
+              gl_FragColor = textureCube(u_skybox, normalize(t.xyz / t.w));
+            }
+      </script>
+      <script>
+
+         /*=================================== Funzione di inizializzazione ambiente ============================================*/
+         /*questa funzione effettua i bind agli uniform statici degli shader
+         es. light shading
+         */
+         function lightingInit(){
+            //main shaders
+            gl.uniform4fv(_lightPos, lightPosition.concat(lightPosition2));
+            gl.uniform4fv(_ambientLightColor, lightAmbientColor);
+            gl.uniform4fv(_diffuseLightColor, lightDiffuseColor.concat(lightDiffuseColor2));
+            gl.uniform4fv(_specularLightColor, lightSpecularColor.concat(lightSpecularColor2));
+            gl.uniform4fv(_dirLightPos, directionalLight);
+            gl.uniform4fv(_dirLightDiffCol, dirLightDiffuseColor);
+            gl.uniform4fv(_dirLightSpecCol, dirLightSpecularColor);
+
+            //gouruad shading
+            gl.useProgram(shaderprogram2);
+            gl.uniform4fv(_lightPosition, lightPosition.concat(lightPosition2));
+            gl.uniform4fv(_ambLightColor, lightAmbientColor);
+            gl.uniform4fv(_diffLightColor, lightDiffuseColor.concat(lightDiffuseColor2));
+            gl.uniform4fv(_specLightColor, lightSpecularColor.concat(lightSpecularColor2));
+            gl.uniform4fv(_dirLightPosG, directionalLight);
+            gl.uniform4fv(_dirLightDiffColG, dirLightDiffuseColor);
+            gl.uniform4fv(_dirLightSpecColG, dirLightSpecularColor);
+            gl.uniform4fv(_spotLightColorG, spotLightColor);
+            gl.uniform1f(_spotLightLimitG, Math.cos(spotLightLimit));
+            gl.uniform1f(_spotLightLimit2G, Math.cos(spotLightLimit2));
+            gl.useProgram(shaderprogram);
+
+            //texture shaders
+            gl.useProgram(shaderTexProgram);
+            gl.uniform4fv(_lightPosTex, lightPosition.concat(lightPosition2));
+            gl.uniform4fv(_ambientColorTex, lightAmbientColor);
+            gl.uniform4fv(_diffuseLightColorTex, lightDiffuseColor.concat(lightDiffuseColor2));
+            gl.uniform4fv(_specularLightColorTex, lightSpecularColor.concat(lightSpecularColor2));
+            gl.uniform4fv(_dirLightPosTex, directionalLight);
+            gl.uniform4fv(_dirLightDiffColTex, dirLightDiffuseColor);
+            gl.uniform4fv(_spotLightColorTex, spotLightColor);
+            gl.uniform1f(_spotLightLimitTex, Math.cos(spotLightLimit));
+            gl.uniform1f(_spotLightLimitTex2, Math.cos(spotLightLimit2));
+
+            gl.useProgram(shaderprogram);
+         }
+
+         function drawFloor() {
+
+            gl.useProgram(shaderTexProgram);
+
+            gl.uniformMatrix4fv(_MmatrixTex, false, mo_matrix);
+            gl.uniformMatrix4fv(_VmatrixTex, false, view_matrix);
+            gl.uniformMatrix4fv(_PmatrixTex, false, proj_matrix);
+            var mo_invTransMatT = m4.multiply(view_matrix,mo_matrix);
+            mo_invTransMatT = m4.transpose(m4.inverse(mo_invTransMatT));
+            gl.uniformMatrix4fv(_inverseTransposeTex, false, mo_invTransMatT);
+            gl.uniformMatrix4fv(_worldInverseTransposeTex, false, m4.transpose(m4.inverse(mo_matrix)));
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, vertex_bufferFloor);
+            gl.vertexAttribPointer(_positionTex, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(_positionTex);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, normal_bufferFloor);
+            gl.vertexAttribPointer(_normalTex, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(_normalTex);
+
+            gl.uniform4fv(_matKaTex, kaTex);
+            gl.uniform4fv(_matKdTex, [0.4,0.4,0.4,1.0]);
+      
+            gl.bindBuffer(gl.ARRAY_BUFFER, tex_bufferFloor);
+            gl.vertexAttribPointer(_texCoordTex, 2, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(_texCoordTex);
+
+            gl.uniform4fv(_spotLightPositionTex, spotLightPosition);//aggiorna posizione fari
+            gl.uniform4fv(_spotLightDirectionTex, spotLightDirection);//posizione aggiornata in drawfloor
+      
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_bufferFloor);
+            // Tell the shader to use texture unit 0 for u_texture
+            gl.uniform1i(_textureLocation, 0);
+
+            gl.uniform1i(_dirLightStateT, dirLightState);
+
+            gl.drawElements(gl.TRIANGLES, indicesFloor.length, gl.UNSIGNED_SHORT, 0);
+
+            gl.useProgram(shaderprogram2);
+            gl.uniform4fv(_spotLightPositionG, spotLightPosition);//aggiorna posizione fari
+            gl.uniform4fv(_spotLightDirectionG, spotLightDirection);//posizione aggiornata in drawfloor
+
+            gl.useProgram(shaderprogram);
+         }
+
+         /*=================================== Creating a canvas ============================================*/
+         var canvas = document.getElementById('my_Canvas');
+         gl = canvas.getContext('webgl');
+         var ctx = ctrlPanelCanvas.getContext("2d");
+
+         /*================================ Defining the geometry and lighting ================================*/
+         // GEOMETRIA SUPERFICIE PAVIMENTO
+         const floorS = 100; // size
+         const floorH = 0.0; // altezza
+         var verticesFloor = [-floorS,floorH,-floorS, floorS,floorH,-floorS, floorS,floorH,floorS, -floorS,floorH,floorS];
+         var normalsFloor = [0,1,0, 0,1,0, 0,1,0, 0,1,0]
+         var texCoordsFloor = [0,floorS-30, floorS-30,floorS-30, floorS-30,0, 0,0]; //per valori non compresi in [0,1] la texture viene ripeututa
+         var indicesFloor = [0, 1, 2, 0, 2, 3,];
+         // var Ka = [1.0, 1.0, 1.0,1.0, 1.0, 1.0,1.0, 1.0, 1.0,1.0, 1.0, 1.0];
+         // var Kd = [0.2, 0.2, 0.7,0.2, 0.2, 0.7,0.2, 0.2, 0.7,0.2, 0.2, 0.7];
+         // var Ks = [0.2, 0.2, 0.7,0.2, 0.2, 0.7,0.2, 0.2, 0.7,0.2, 0.2, 0.7];
+         var envShininess = [10.0,10.0,10.0,10.0];
+         var floorTexture=gl.createTexture();
+         var imageF = new Image();
+         imageF.src = './resources/images/sand.png';
+         imageF.addEventListener('load', function() {
+            gl.activeTexture(gl.TEXTURE0); //activates texture location 0
+            gl.bindTexture(gl.TEXTURE_2D, floorTexture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,gl.UNSIGNED_BYTE, imageF);
+            if (isPowerOf2(imageF.width) && isPowerOf2(imageF.height)) {
+               gl.generateMipmap(gl.TEXTURE_2D);
+               //choose the best mip, then blend 4 pixels from that mip (default: NEAREST_MIPMAP_LINEAR)
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+            } else {
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            }
+         });
+
+
+         //LIGHTING AND SHADING
+         var directionalLight = [-1.0, 1.0, 1.0, 0.0 ];//luce direzionale rossa (sole)
+         var lightAmbientColor =  [0.6, 0.6, 0.6, 1.0 ];
+         var dirLightDiffuseColor =  [1.0, 0.5, 0.5, 1.0 ];
+         var dirLightSpecularColor = [1.0, 0.8, 0.8, 1.0 ];
+         
+         var lightPosition = [1.0, 2.0, 3.0, 1.0 ];//luce puntiforme
+         // var lightAmbientColor =  [0.7, 0.7, 0.7, 1.0 ];
+         var lightDiffuseColor =  [0.1, 0.1, 0.9, 1.0 ];
+         var lightSpecularColor = [0.1, 0.1, 0.9, 1.0 ];
+         
+         var lightPosition2 = [0.0, 1.0, -7.0, 1.0 ];//luce puntiforme verde
+         // var lightAmbientColor2 =  [0.7, 0.4, 0.4, 1.0 ];
+         var lightDiffuseColor2 =  [0.1, 0.9, 0.1, 1.0 ];
+         var lightSpecularColor2 = [0.1, 0.9, 0.1, 1.0 ];
+
+         //spotlight (fari)
+         var spotLightPosition =  [0.0,2.0,-1.0,1.0];
+         // var lmat = m4.lookAt(spotLightPosition, [0.0,0.0,5.0], [0,1,0]);
+         //ze = (lmat[8],lmat[9],lmat[10])
+         // var spotLightDirection = [-lmat[8], -lmat[9],-lmat[10],1.0]; //negato per la convenzione di webgl
+         var spotLightDirection = [0.0,-0.4,-0.8,1.0];//direzione verso cui punta la luce
+         var spotLightColor = [2.0,1.5,1.5,1.0];//colore dei fari
+         var spotLightLimit = degToRad(30);
+         var spotLightLimit2 = degToRad(50);
+
+         /*======================= Creazione e riempimento dei buffer delle geometrie =========================*/
+
+         //GEOMETRIA PAVIMENTO
+         var vertex_bufferFloor = gl.createBuffer();
+         gl.bindBuffer(gl.ARRAY_BUFFER, vertex_bufferFloor);
+         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verticesFloor), gl.STATIC_DRAW);
+         //normal buffer
+         var normal_bufferFloor = gl.createBuffer();
+         gl.bindBuffer(gl.ARRAY_BUFFER, normal_bufferFloor);
+         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normalsFloor), gl.STATIC_DRAW);
+         var tex_bufferFloor = gl.createBuffer();
+         gl.bindBuffer(gl.ARRAY_BUFFER, tex_bufferFloor);
+         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoordsFloor), gl.STATIC_DRAW);
+         // Create and store data into index buffer
+         var index_bufferFloor = gl.createBuffer();
+         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_bufferFloor);
+         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indicesFloor), gl.STATIC_DRAW);
+         // var ka_bufferEnv = gl.createBuffer();
+         // gl.bindBuffer(gl.ARRAY_BUFFER, ka_bufferEnv);
+         // gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Ka), gl.STATIC_DRAW);
+         // var kd_bufferEnv = gl.createBuffer();
+         // gl.bindBuffer(gl.ARRAY_BUFFER, kd_bufferEnv);
+         // gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Kd), gl.STATIC_DRAW);
+         // var ks_bufferEnv = gl.createBuffer();
+         // gl.bindBuffer(gl.ARRAY_BUFFER, ks_bufferEnv);
+         // gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(Ks), gl.STATIC_DRAW);
+         // var ns_bufferEnv = gl.createBuffer();
+         // gl.bindBuffer(gl.ARRAY_BUFFER, ns_bufferEnv);
+         // gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(envShininess), gl.STATIC_DRAW);
+
+         //creazione buffer per macchina letta da obj
+         //chassis
+         var vertex_bufferC = gl.createBuffer();
+         var ka_bufferC = gl.createBuffer();
+         var kd_bufferC = gl.createBuffer();
+         var ks_bufferC = gl.createBuffer();
+         var ns_bufferC = gl.createBuffer();
+         var normal_bufferC = gl.createBuffer();
+         var index_bufferC = gl.createBuffer();
+         //tireASX
+         var vertex_bufferTASX = gl.createBuffer();
+         var ka_bufferTASX = gl.createBuffer();
+         var kd_bufferTASX = gl.createBuffer();
+         var ks_bufferTASX = gl.createBuffer();
+         var ns_bufferTASX = gl.createBuffer();
+         var normal_bufferTASX = gl.createBuffer();
+         var index_bufferTASX = gl.createBuffer();
+         //tireADX
+         var vertex_bufferTADX = gl.createBuffer();
+         var ka_bufferTADX = gl.createBuffer();
+         var kd_bufferTADX = gl.createBuffer();
+         var ks_bufferTADX = gl.createBuffer();
+         var ns_bufferTADX = gl.createBuffer();
+         var normal_bufferTADX = gl.createBuffer();
+         var index_bufferTADX = gl.createBuffer();
+         //tirePSX
+         var vertex_bufferTPSX = gl.createBuffer();
+         var ka_bufferTPSX = gl.createBuffer();
+         var kd_bufferTPSX = gl.createBuffer();
+         var ks_bufferTPSX = gl.createBuffer();
+         var ns_bufferTPSX = gl.createBuffer();
+         var normal_bufferTPSX = gl.createBuffer();
+         var index_bufferTPSX = gl.createBuffer();
+         //tirePDX
+         var vertex_bufferTPDX = gl.createBuffer();
+         var ka_bufferTPDX = gl.createBuffer();
+         var kd_bufferTPDX = gl.createBuffer();
+         var ks_bufferTPDX = gl.createBuffer();
+         var ns_bufferTPDX = gl.createBuffer();
+         var normal_bufferTPDX = gl.createBuffer();
+         var index_bufferTPDX = gl.createBuffer();
+
+         
+         /*============================= SHADERS ========================================*/
+         //SHADER PRINCIPALE ============================================================================
+         var shaderprogram = webglUtils.createProgramFromScripts(gl,
+            ["vertex-shader", "fragment-shader"]);
+         //VERTEX SHADER
+         var mo_matrix, proj_matrix, view_matrix, mo_invTransMat;
+         var _Pmatrix = gl.getUniformLocation(shaderprogram, "Pmatrix");
+         var _Vmatrix = gl.getUniformLocation(shaderprogram, "Vmatrix");
+         var _Mmatrix = gl.getUniformLocation(shaderprogram, "Mmatrix");
+         var _phongNormalMat = gl.getUniformLocation(shaderprogram, "normalMat");
+         var _wPhongNormalMat = gl.getUniformLocation(shaderprogram, "wNormalMat");
+         var _position = gl.getAttribLocation(shaderprogram, "position");
+         var _vertNormal = gl.getAttribLocation(shaderprogram, "vertNormal");
+         var _aKa = gl.getAttribLocation(shaderprogram, "aKa");
+         var _aKd = gl.getAttribLocation(shaderprogram, "aKd");
+         var _aKs = gl.getAttribLocation(shaderprogram, "aKs");
+         var _ashininess = gl.getAttribLocation(shaderprogram, "ashininess");
+         //FRAGMENT SHADER
+         var _ambientLightColor = gl.getUniformLocation(shaderprogram, "ambientLightColor");
+         var _diffuseLightColor = gl.getUniformLocation(shaderprogram, "diffuseLightColorArr");
+         var _specularLightColor = gl.getUniformLocation(shaderprogram, "specularLightColorArr");
+         var _lightPos = gl.getUniformLocation(shaderprogram, "lightPosArr");
+         var _dirLightPos = gl.getUniformLocation(shaderprogram, "dirLightPos");
+         var _dirLightDiffCol = gl.getUniformLocation(shaderprogram, "dirLightDiffColor");
+         var _dirLightSpecCol = gl.getUniformLocation(shaderprogram, "dirLightSpecColor");
+         var _dirLightState = gl.getUniformLocation(shaderprogram, "dirLightState");
+         var _envMapMode = gl.getUniformLocation(shaderprogram,"envMap");
+         var dirLightState=1;
+         var envMapping=0;
+
+         //SHADER PRINCIPALE 2 (gouraud) ============================================================================
+         var shaderprogram2 = webglUtils.createProgramFromScripts(gl,
+            ["vertex-shader-gouraud", "fragment-shader-gouraud"]);
+         //VERTEX SHADER
+         var _vPosition = gl.getAttribLocation(shaderprogram2, "position");
+         var _vNormal = gl.getAttribLocation(shaderprogram2, "normal");
+         var _ka = gl.getAttribLocation(shaderprogram2, "Ka");
+         var _kd = gl.getAttribLocation(shaderprogram2, "Kd");
+         var _ks = gl.getAttribLocation(shaderprogram2, "Ks");
+         var _shininess = gl.getAttribLocation(shaderprogram2, "shininessVal");
+         var _mMat = gl.getUniformLocation(shaderprogram2, "mMat");
+         var _vMat= gl.getUniformLocation(shaderprogram2, "viewMat");
+         var _pMat = gl.getUniformLocation(shaderprogram2, "projMat");
+         var _normMat = gl.getUniformLocation(shaderprogram2, "normalMat");
+         var _wNormMat = gl.getUniformLocation(shaderprogram2, "wNormalMat");
+         var _ambLightColor = gl.getUniformLocation(shaderprogram2, "ambientColor");
+         var _diffLightColor = gl.getUniformLocation(shaderprogram2, "diffuseColor");
+         var _specLightColor = gl.getUniformLocation(shaderprogram2, "specularColor");
+         var _lightPosition = gl.getUniformLocation(shaderprogram2, "lightPos");
+         var _dirLightPosG = gl.getUniformLocation(shaderprogram2, "dirLightPos");
+         var _dirLightDiffColG = gl.getUniformLocation(shaderprogram2, "dirLightDiffColor");
+         var _dirLightSpecColG = gl.getUniformLocation(shaderprogram2, "dirLightSpecColor");
+         var _dirLightStateG = gl.getUniformLocation(shaderprogram2, "dirLightState");
+         var _spotLightPositionG = gl.getUniformLocation(shaderprogram2, "spotLightPosition");
+         var _spotLightDirectionG = gl.getUniformLocation(shaderprogram2, "spotLightDirection");
+         var _spotLightColorG = gl.getUniformLocation(shaderprogram2, "spotLightColor");
+         var _spotLightLimitG = gl.getUniformLocation(shaderprogram2, "spotLightLimit");
+         var _spotLightLimit2G = gl.getUniformLocation(shaderprogram2, "spotLightLimit2");
+         //FRAGMENT SHADER
+         var _envMappingMode = gl.getUniformLocation(shaderprogram2,"envMap");
+         var shadingMode='phong';
+
+         //SHADER TEXTURE ============================================================================
+         //VERTEX SHADER
+         var shaderTexProgram = webglUtils.createProgramFromScripts(gl,
+            ["vertex-shader-texture", "fragment-shader-texture"]);
+         var _MmatrixTex = gl.getUniformLocation(shaderTexProgram, "Mmatrix");
+         var _VmatrixTex = gl.getUniformLocation(shaderTexProgram, "Vmatrix");
+         var _PmatrixTex = gl.getUniformLocation(shaderTexProgram, "Pmatrix");
+
+         var _positionTex = gl.getAttribLocation(shaderTexProgram, "a_position");
+         var _normalTex = gl.getAttribLocation(shaderTexProgram, "a_normal");
+         var _texCoordTex = gl.getAttribLocation(shaderTexProgram, "a_texcoord");
+         var _textureLocation = gl.getUniformLocation(shaderTexProgram, "u_texture");
+         var _worldInverseTransposeTex = gl.getUniformLocation(shaderTexProgram, "u_worldInverseTransposeTex");
+         var _inverseTransposeTex = gl.getUniformLocation(shaderTexProgram, "u_inverseTransposeTex");
+         //FRAGMENT SHADER
+         var _dirLightPosTex = gl.getUniformLocation(shaderTexProgram, "dirLightPos");
+         var _dirLightDiffColTex = gl.getUniformLocation(shaderTexProgram, "dirLightDiffColor");
+         var _dirLightSpecColTex = gl.getUniformLocation(shaderTexProgram, "dirLightSpecColor");
+         var _ambientColorTex = gl.getUniformLocation(shaderTexProgram, "ambientColor");
+         var _diffuseLightColorTex = gl.getUniformLocation(shaderTexProgram, "diffuseLightColorArr");
+         var _specularLightColorTex = gl.getUniformLocation(shaderTexProgram, "specularLightColorArr");
+         var _lightPosTex = gl.getUniformLocation(shaderTexProgram, "lightPosArr");
+         var _matKaTex = gl.getUniformLocation(shaderTexProgram, "KaT");
+         var _matKdTex = gl.getUniformLocation(shaderTexProgram, "KdT");
+         var _dirLightStateT = gl.getUniformLocation(shaderTexProgram, "dirLightState");
+         var _spotLightPositionTex =  gl.getUniformLocation(shaderTexProgram, "spotLightPosition");
+         var _spotLightDirectionTex = gl.getUniformLocation(shaderTexProgram, "spotLightDirection");
+         var _spotLightColorTex = gl.getUniformLocation(shaderTexProgram, "spotLightColor");
+         var _spotLightLimitTex = gl.getUniformLocation(shaderTexProgram, "spotLightLimit");
+         var _spotLightLimitTex2 = gl.getUniformLocation(shaderTexProgram, "spotLightLimit2");
+         var kaTex = [0.1,0.1,0.1,1.0];
+         var kdTex = [0.3,0.3,0.3,1.0];
+
+
+         //=======================================================================================================
+         gl.useProgram(shaderprogram);
+
+
+         /*=========================== Definzione parametri iniziali ===========================*/
+         var aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+         var zmin = 1;
+         var zmax = 100;
+         var fov = 40;
+         var THETA = degToRad(50), PHI = degToRad(30);
+         var D = 7;
+         var target = [0, 0, 0]; //oggetto inizialmente nell'origine
+         var up = [0, 1, 0];
+         var drag;
+
+         /*=========================== Mouse and keyboard events ===========================*/
+         var mouseDown = function (e) {
+            drag = true;
+            old_x = e.pageX, old_y = e.pageY;
+            e.preventDefault();
+            return false;
+         };
+
+         var mouseUp = function (e) {
+            drag = false;
+         };
+
+         var mouseMove = function (e) {
+            if (!drag) return false;
+            dX = -(e.pageX - old_x) * 2 * Math.PI / canvas.width;
+            dY = -(e.pageY - old_y) * 2 * Math.PI / canvas.height;
+            THETA += dX;
+            PHI += dY;
+            old_x = e.pageX, old_y = e.pageY;
+            e.preventDefault();
+         };
+
+         document.getElementById("Button1").onclick = function () { D *= 1.1 };
+         document.getElementById("Button2").onclick = function () { D *= 0.9 };
+         document.getElementById("Button3").onclick = function () { zmin *= 1.1; zmax *= 1.1 };
+         document.getElementById("Button4").onclick = function () { zmin *= 0.9; zmax *= 0.9 };
+         document.getElementById("Button5").onclick = function () { fov *= 1.1; fov *= 1.1 };
+         document.getElementById("Button6").onclick = function () { fov *= 0.9; fov *= 0.9 };
+         document.getElementById("shading").onchange = function () { shadingMode=document.getElementById("shading").value };
+         document.getElementById("DirLight").onclick = function () { dirLightState==0?dirLightState=1:dirLightState=0; };
+
+         ctrlPanelCanvas.onmousedown = ctrlPanelClick;
+         ctrlPanelCanvas.onmouseup = ctrlPanelClick;
+
+         canvas.onmousedown = mouseDown;
+         canvas.onmouseup = mouseUp;
+         canvas.mouseout = mouseUp;
+         canvas.onmousemove = mouseMove;
+         window.addEventListener('keydown', doKeyDown, true);
+         window.addEventListener('keyup', doKeyUp, true);
+
+         /*=================== Drawing =================== */
+         function doKeyDown(e) {
+            //====================
+            // THE W KEY
+            //====================
+            if (e.keyCode == 87) key[0] = true;
+            //====================
+            // THE S KEY
+            //====================
+            if (e.keyCode == 83) key[2] = true;
+            //====================
+            // THE A KEY
+            //====================
+            if (e.keyCode == 65) key[1] = true;
+            //====================
+            // THE D KEY
+            //====================
+            if (e.keyCode == 68) key[3] = true;
+
+            //====================
+            // THE C KEY
+            //====================
+            if(e.keyCode == 67) switchCamera();
+         }
+         function doKeyUp(e) {
+            //====================
+            // THE W KEY
+            //====================
+            if (e.keyCode == 87) key[0] = false;
+            //====================
+            // THE S KEY
+            //====================
+            if (e.keyCode == 83) key[2] = false;
+            //====================
+            // THE A KEY
+            //====================
+            if (e.keyCode == 65) key[1] = false;
+            //====================
+            // THE D KEY
+            //====================
+            if (e.keyCode == 68) key[3] = false;
+         }
+
+         function settingsInit(){
+            gl.enable(gl.DEPTH_TEST); //utilizza il depth-test dello z-buffer
+            gl.depthFunc(gl.LEQUAL); // per rendere skybox visibile (il depth buffer include anche z=1.0) 
+            gl.clearDepth(1.0);//il clear del depth buffer imposta tutto a 1.0  (massimo)
+            // gl.clearColor(0.2, 0.2, 0.7, 1);
+            gl.viewport(0.0, 0.0, canvas.width, canvas.height);
+         }
+
+         //funzione che renderizza la scena (macchina e resto)
+         var carScaling = [0.3,0.3,0.3];
+         var render = function () {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);//resetta il depth e color buffer
+            //set projection matrix
+            proj_matrix = m4.perspective(degToRad(fov), aspect, zmin, zmax);
+            
+            //set view matrix
+            //l'aggiornamento della posizione della camera va adeguato alla scala della macchina 
+            updateCameraValues(D,THETA,PHI,px*carScaling[0],py*carScaling[1],pz*carScaling[2]);
+            view_matrix = m4.inverse(m4.lookAt(cameras[cameraNum], targets[cameraNum], up));
+
+            // Clear the 2D canvas
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            
+            if(shadingMode=='gouraud'){
+               gl.useProgram(shaderprogram2);
+               gl.uniformMatrix4fv(_pMat, false, proj_matrix);
+               gl.uniformMatrix4fv(_vMat, false, view_matrix);
+               gl.uniform1i(_dirLightStateG, dirLightState);
+               gl.useProgram(shaderprogram);
+            }
+            else{   
+               gl.uniform1i(_envMapMode, envMapping);//attiva/disattiva l'env mapping
+            }
+            gl.uniform1i(_dirLightState, dirLightState);//attiva/disattiva luce direzionale
+            gl.uniformMatrix4fv(_Pmatrix, false, proj_matrix);
+            gl.uniformMatrix4fv(_Vmatrix, false, view_matrix);
+            
+            
+            //set model matrix to I4
+            mo_matrix = m4.identity();
+            // gl.uniformMatrix4fv(_Mmatrix, false, mo_matrix);
+
+            updateCarLights(px*carScaling[0],py*carScaling[1],pz*carScaling[2]);
+
+            drawFloor(); // disegna il suolo
+            //disegna mesh ambiente
+            renderEnv();
+            renderObjCar(carScaling);
+            
+            renderCtrlPanel();
+            renderSkyBox();
+         }
+
+         const FRAMES_PER_SECOND = 30;  // Valid values are 60,30,20,15,10...
+         // set the mim time to render the next frame
+         const FRAME_MIN_TIME = (1000 / 60) * (60 / FRAMES_PER_SECOND) - (1000 / 60) * 0.5;
+         var lastFrameTime = 0;  // the last frame time
+         function update(time) {
+            if (time - lastFrameTime < FRAME_MIN_TIME) { //skip the frame if the call is too early
+               CarDoStep();
+               window.requestAnimationFrame(update);
+               return; // return as there is nothing to do
+            }
+            //sono passati 1000/FRAME_PER_SECOND millisecondi dall'ultimo render
+            lastFrameTime = time; // remember the time of the rendered frame
+            render();
+            window.requestAnimationFrame(update); // get next frame
+         }
+
+         lightingInit();//setting lighting
+         loadEnv();//reading environment (static and from obj) and textures
+         initSkyBox();
+         loadObjCar();
+         CarInit();
+         settingsInit();
+         update(0);
+         window.requestAnimationFrame(update);
+
+      </script>
+</body>
+
+</html>
