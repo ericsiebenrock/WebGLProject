@@ -186,6 +186,7 @@ function renderChassisPhong(){
 
    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_bufferC);
 
+   gl.uniform1i(_envMapMode, envMapping);//attiva/disattiva l'env mapping
    gl.drawElements(gl.TRIANGLES, objIndC.length, gl.UNSIGNED_SHORT, 0);
 }
 

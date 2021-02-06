@@ -59,6 +59,7 @@
       <script src="control-panel.js"></script>
       <script src="environment.js"></script>
       <script src="skybox.js"></script>
+      <script src="shadows.js"></script>
 
       <p> </p>
          <button id="Button1">Increase D</button>
@@ -467,6 +468,76 @@
               gl_FragColor = textureCube(u_skybox, normalize(t.xyz / t.w));
             }
       </script>
+      <script  id="shadow-vertex-shader" type="x-shader/x-vertex">
+         attribute vec4 a_position;
+         attribute vec2 a_texcoord;
+         
+         uniform mat4 u_projection;
+         uniform mat4 u_view;
+         uniform mat4 u_world;
+         uniform mat4 u_textureMatrix;
+         
+         varying vec2 v_texcoord;
+         varying vec4 v_projectedTexcoord;
+         
+         void main() {
+           // Multiply the position by the matrix.
+           vec4 worldPosition = u_world * a_position;
+         
+           gl_Position = u_projection * u_view * worldPosition;
+         
+           // Pass the texture coord to the fragment shader.
+           v_texcoord = a_texcoord;
+         
+           v_projectedTexcoord = u_textureMatrix * worldPosition;
+         }
+      </script>
+      <script  id="shadow-fragment-shader" type="x-shader/x-fragment">
+         precision mediump float;
+         
+         // Passed in from the vertex shader.
+         varying vec2 v_texcoord;
+         varying vec4 v_projectedTexcoord;
+         
+         uniform vec4 u_colorMult;
+         uniform sampler2D u_texture;
+         uniform sampler2D u_projectedTexture;
+         
+         void main() {
+           vec3 projectedTexcoord = v_projectedTexcoord.xyz / v_projectedTexcoord.w;
+           bool inRange =
+               projectedTexcoord.x >= 0.0 &&
+               projectedTexcoord.x <= 1.0 &&
+               projectedTexcoord.y >= 0.0 &&
+               projectedTexcoord.y <= 1.0;
+         
+           // the 'r' channel has the depth values
+           vec4 projectedTexColor = vec4(texture2D(u_projectedTexture, projectedTexcoord.xy).rrr, 1);
+           vec4 texColor = texture2D(u_texture, v_texcoord) * u_colorMult;
+           float projectedAmount = inRange ? 1.0 : 0.0;
+           gl_FragColor = mix(texColor, projectedTexColor, projectedAmount);
+         }
+      </script>
+      <script  id="shadow-color-vertex-shader" type="x-shader/x-vertex">
+         attribute vec4 a_position;
+         
+         uniform mat4 u_projection;
+         uniform mat4 u_view;
+         uniform mat4 u_world;
+         
+         void main() {
+           // Multiply the position by the matrices.
+           gl_Position = u_projection * u_view * u_world * a_position;
+         }
+      </script>
+      <script  id="shadow-color-fragment-shader" type="x-shader/x-fragment">
+         precision mediump float;
+         
+         uniform vec4 u_color;
+         void main() {
+           gl_FragColor = u_color;
+         }
+      </script>
       <script>
 
          /*=================================== Funzione di inizializzazione ambiente ============================================*/
@@ -483,7 +554,7 @@
             gl.uniform4fv(_dirLightDiffCol, dirLightDiffuseColor);
             gl.uniform4fv(_dirLightSpecCol, dirLightSpecularColor);
 
-            //gouruad shading
+            //gouruad shading (always used for environment)
             gl.useProgram(shaderprogram2);
             gl.uniform4fv(_lightPosition, lightPosition.concat(lightPosition2));
             gl.uniform4fv(_ambLightColor, lightAmbientColor);
@@ -597,7 +668,7 @@
 
 
          //LIGHTING AND SHADING
-         var directionalLight = [-1.0, 1.0, 1.0, 0.0 ];//luce direzionale rossa (sole)
+         var directionalLight = [1.0, 0.0, 1.0, 0.0 ];//luce direzionale rossa (sole)
          var lightAmbientColor =  [0.6, 0.6, 0.6, 1.0 ];
          var dirLightDiffuseColor =  [1.0, 0.5, 0.5, 1.0 ];
          var dirLightSpecularColor = [1.0, 0.8, 0.8, 1.0 ];
@@ -790,7 +861,15 @@
          var kaTex = [0.1,0.1,0.1,1.0];
          var kdTex = [0.3,0.3,0.3,1.0];
 
-
+         //SHADER OMBRE ===============================================================================
+         var shaderShadowProgramInfo = webglUtils.createProgramInfo(gl,
+            ["shadow-vertex-shader", "shadow-fragment-shader"]);
+         var shaderColorProgramInfo = webglUtils.createProgramInfo(gl,
+            ['shadow-color-vertex-shader', 'shadow-color-fragment-shader']);
+         const depthFramebuffer = gl.createFramebuffer();
+         const depthTexture = gl.createTexture();
+         const depthTextureSize = 512;
+         
          //=======================================================================================================
          gl.useProgram(shaderprogram);
 
@@ -914,14 +993,11 @@
             ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
             
             if(shadingMode=='gouraud'){
-               gl.useProgram(shaderprogram2);
+               gl.useProgram(shaderprogram2); //set the gouraud shaders
                gl.uniformMatrix4fv(_pMat, false, proj_matrix);
                gl.uniformMatrix4fv(_vMat, false, view_matrix);
                gl.uniform1i(_dirLightStateG, dirLightState);
-               gl.useProgram(shaderprogram);
-            }
-            else{   
-               gl.uniform1i(_envMapMode, envMapping);//attiva/disattiva l'env mapping
+               gl.useProgram(shaderprogram); //reset the main shaders (phong)
             }
             gl.uniform1i(_dirLightState, dirLightState);//attiva/disattiva luce direzionale
             gl.uniformMatrix4fv(_Pmatrix, false, proj_matrix);
@@ -941,6 +1017,7 @@
             
             renderCtrlPanel();
             renderSkyBox();
+            renderShadows()
          }
 
          const FRAMES_PER_SECOND = 30;  // Valid values are 60,30,20,15,10...
@@ -964,6 +1041,7 @@
          initSkyBox();
          loadObjCar();
          CarInit();
+         shadowsInit();
          settingsInit();
          update(0);
          window.requestAnimationFrame(update);
