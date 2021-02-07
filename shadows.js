@@ -73,16 +73,20 @@ function drawScene(projectionMatrix, viewMatrix, textureMatrix, programInfo){
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);//resetta il depth e color buffer
     // Clear the 2D canvas
     // ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    gl.useProgram(programInfo.program);
-    webglUtils.setUniforms(programInfo, {
-        u_view: viewMatrix,
-        u_projection: projectionMatrix,
-        u_textureMatrix: textureMatrix,
-        u_projectedTexture: depthTexture,
-        // U_dirLightState: dirLightState
-      });
+    // gl.useProgram(programInfo.program);
+    // webglUtils.setUniforms(programInfo, {
+    //     u_view: viewMatrix,
+    //     u_projection: projectionMatrix,
+    //     u_textureMatrix: textureMatrix,
+    //     u_projectedTexture: depthTexture,
+    //     // U_dirLightState: dirLightState
+    //   });
     
-    
+    //note: shadows are implemented only for the gouraud shading
+    gl.useProgram(shaderprogram2); //set the gouraud shaders
+    gl.uniformMatrix4fv(_pMat, false, projectionMatrix);
+    gl.uniformMatrix4fv(_vMat, false, viewMatrix);
+    gl.uniform1i(_dirLightStateG, dirLightState);
     //set model matrix to I4
     mo_matrix = m4.identity();
     // gl.uniformMatrix4fv(_Mmatrix, false, mo_matrix);
@@ -102,7 +106,7 @@ function drawScene(projectionMatrix, viewMatrix, textureMatrix, programInfo){
 function renderShadows(){
     //first: render the scene from the POV of the light
     // gl.enable(gl.CULL_FACE);
-    // gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.DEPTH_TEST);
 
     // first draw from the POV of the light (sun)
     var lightWorldMatrix = m4.inverse(m4.lookAt(
@@ -118,18 +122,18 @@ function renderShadows(){
     drawScene(lightProjectionMatrix, lightWorldMatrix, m4.identity(), shaderColorProgramInfo)
 
     // now draw scene to the canvas projecting the depth texture into the scene
-    // gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    // gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     // // gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    // let textureMatrix = m4.identity();
-    // textureMatrix = m4.translate(textureMatrix, 0.5, 0.5, 0.5);
-    // textureMatrix = m4.scale(textureMatrix, 0.5, 0.5, 0.5);
-    // textureMatrix = m4.multiply(textureMatrix, lightProjectionMatrix);
+    let textureMatrix = m4.identity();
+    textureMatrix = m4.translate(textureMatrix, 0.5, 0.5, 0.5);
+    textureMatrix = m4.scale(textureMatrix, 0.5, 0.5, 0.5);
+    textureMatrix = m4.multiply(textureMatrix, lightProjectionMatrix);
 
-    // textureMatrix = m4.multiply(textureMatrix, lightWorldMatrix);
-    // // Compute the projection matrix
-    // proj_matrix = m4.perspective(degToRad(fov), aspect, zmin, zmax);
-    // // Compute the camera's matrix using look at.
-    // view_matrix = m4.inverse(m4.lookAt(cameras[cameraNum], targets[cameraNum], up));
-    // drawScene(proj_matrix, view_matrix, textureMatrix, shaderShadowProgramInfo);
+    textureMatrix = m4.multiply(textureMatrix, lightWorldMatrix);
+    // Compute the projection matrix
+    proj_matrix = m4.perspective(degToRad(fov), aspect, zmin, zmax);
+    // Compute the camera's matrix using look at.
+    view_matrix = m4.inverse(m4.lookAt(cameras[cameraNum], targets[cameraNum], up));
+    drawScene(proj_matrix, view_matrix, textureMatrix, shaderShadowProgramInfo);
 }
